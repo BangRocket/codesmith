@@ -13,8 +13,9 @@ load_dotenv()
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 CODESMITH_CHANNEL_ID = os.getenv("CODESMITH_CHANNEL_ID", "")  # Optional restriction
 
-# Anthropic API Key (passed to Claude Code processes)
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+# Anthropic API Key (optional - passed to Claude Code processes if set)
+# If not set, users can authenticate with their own Max/Pro subscription
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY") or None
 
 # Sandbox Configuration
 _workspace_default = "/var/codesmith/workspaces"
@@ -36,8 +37,12 @@ CLAUDE_CODE_PATH = "/usr/bin/claude"  # Global install location
 
 
 def is_configured() -> bool:
-    """Check if required configuration is present."""
-    return bool(DISCORD_BOT_TOKEN and ANTHROPIC_API_KEY)
+    """Check if required configuration is present.
+
+    Note: ANTHROPIC_API_KEY is optional - users can authenticate
+    with their own Claude Max/Pro subscription via /cc login.
+    """
+    return bool(DISCORD_BOT_TOKEN)
 
 
 def get_user_workspace(user_id: str) -> Path:

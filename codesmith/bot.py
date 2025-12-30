@@ -9,6 +9,14 @@ from datetime import datetime
 import discord
 from discord.ext import commands, tasks
 
+from .auth import (
+    AuthMethod,
+    delete_credentials,
+    get_auth_method,
+    has_valid_credentials,
+    store_credentials,
+    validate_credentials_json,
+)
 from .config import (
     CODESMITH_CHANNEL_ID,
     DISCORD_BOT_TOKEN,
@@ -46,6 +54,7 @@ class CodesmithBot(commands.Bot):
         self.embed_manager = EmbedManager()
         self._output_queues: dict[str, asyncio.Queue] = {}
         self._output_tasks: dict[str, asyncio.Task] = {}
+        self._pending_logins: set[str] = set()  # User IDs awaiting credential paste
 
     async def setup_hook(self) -> None:
         """Called when the bot is starting up."""
@@ -77,12 +86,19 @@ class CodesmithBot(commands.Bot):
         if message.author.bot:
             return
 
+        user_id = str(message.author.id)
+
+        # Handle DMs for credential paste
+        if isinstance(message.channel, discord.DMChannel):
+            if user_id in self._pending_logins:
+                await self._handle_credential_paste(message)
+            return
+
         # Check if we should process this channel
         if CODESMITH_CHANNEL_ID and str(message.channel.id) != CODESMITH_CHANNEL_ID:
             return
 
         # Check if user has an active session
-        user_id = str(message.author.id)
         if not self.session_manager.has_session(user_id):
             return  # No session, ignore regular messages
 
@@ -94,6 +110,41 @@ class CodesmithBot(commands.Bot):
                 await message.add_reaction("📨")
             except discord.Forbidden:
                 pass
+
+    async def _handle_credential_paste(self, message: discord.Message) -> None:
+        """Handle credential JSON pasted in DM.
+
+        Args:
+            message: Discord DM message
+        """
+        user_id = str(message.author.id)
+        content = message.content.strip()
+
+        # Validate the JSON
+        credentials = validate_credentials_json(content)
+
+        if credentials is None:
+            await message.channel.send(
+                "Invalid credentials format. Please paste the entire contents of "
+                "`~/.claude/.credentials.json` (should be valid JSON with "
+                "`claudeAiOauth` key)."
+            )
+            return
+
+        # Store credentials
+        try:
+            store_credentials(user_id, credentials)
+            self._pending_logins.discard(user_id)
+
+            await message.channel.send(
+                "Credentials saved successfully! You can now use `/cc start` "
+                "to begin a Claude Code session with your Max/Pro subscription."
+            )
+            logger.info(f"Stored OAuth credentials for user {user_id}")
+
+        except Exception as e:
+            logger.exception(f"Failed to store credentials for {user_id}")
+            await message.channel.send(f"Failed to save credentials: {e}")
 
     def _get_output_callback(self, channel: discord.TextChannel):
         """Create an output callback for a channel.
@@ -227,7 +278,21 @@ class CodesmithBot(commands.Bot):
             )
             return
 
-        await ctx.respond("Starting Claude Code session...", ephemeral=True)
+        # Check authentication
+        auth_method = get_auth_method(user_id)
+        if auth_method == AuthMethod.NONE:
+            await ctx.respond(
+                "No authentication configured.\n"
+                "Use `/cc login` to authenticate with your Claude Max/Pro "
+                "subscription, or ask the server admin to set `ANTHROPIC_API_KEY`.",
+                ephemeral=True,
+            )
+            return
+
+        auth_type = "OAuth" if auth_method == AuthMethod.OAUTH else "API key"
+        await ctx.respond(
+            f"Starting Claude Code session ({auth_type})...", ephemeral=True
+        )
 
         try:
             # Start session
@@ -392,6 +457,70 @@ async def cc_requirements(ctx: discord.ApplicationContext):
     )
 
 
+@cc_group.command(
+    name="login", description="Authenticate with your Claude Max/Pro subscription"
+)
+async def cc_login(ctx: discord.ApplicationContext):
+    """Start OAuth credential setup via DM."""
+    user_id = str(ctx.author.id)
+
+    # Check if already authenticated
+    if has_valid_credentials(user_id):
+        await ctx.respond(
+            "You already have OAuth credentials stored. "
+            "Use `/cc logout` first if you want to re-authenticate.",
+            ephemeral=True,
+        )
+        return
+
+    # Add to pending logins
+    bot._pending_logins.add(user_id)
+
+    # Send instructions in channel
+    await ctx.respond(
+        "Check your DMs for authentication instructions.",
+        ephemeral=True,
+    )
+
+    # DM the user with instructions
+    try:
+        dm_channel = await ctx.author.create_dm()
+        await dm_channel.send(
+            "**Claude Max/Pro Authentication**\n\n"
+            "To use your Claude Max/Pro subscription with Codesmith:\n\n"
+            "1. Open a terminal on your computer\n"
+            "2. Run: `claude login`\n"
+            "3. Select **\"Claude account with subscription\"**\n"
+            "4. Complete the login in your browser\n"
+            "5. Run: `cat ~/.claude/.credentials.json`\n"
+            "6. Copy the **entire JSON output** and paste it here\n\n"
+            "Your credentials will be stored securely and used for your sessions."
+        )
+    except discord.Forbidden:
+        bot._pending_logins.discard(user_id)
+        await ctx.followup.send(
+            "Could not send DM. Please enable DMs from server members.",
+            ephemeral=True,
+        )
+
+
+@cc_group.command(name="logout", description="Remove your stored Claude credentials")
+async def cc_logout(ctx: discord.ApplicationContext):
+    """Remove stored OAuth credentials."""
+    user_id = str(ctx.author.id)
+
+    if delete_credentials(user_id):
+        await ctx.respond(
+            "Your Claude credentials have been removed.",
+            ephemeral=True,
+        )
+    else:
+        await ctx.respond(
+            "No stored credentials to remove.",
+            ephemeral=True,
+        )
+
+
 # Add command group to bot
 bot.add_application_command(cc_group)
 
@@ -400,7 +529,7 @@ def main():
     """Main entry point."""
     if not is_configured():
         logger.error("Missing required configuration!")
-        logger.error("Set DISCORD_BOT_TOKEN and ANTHROPIC_API_KEY")
+        logger.error("Set DISCORD_BOT_TOKEN in environment")
         return
 
     logger.info("Starting Codesmith bot...")

@@ -6,6 +6,7 @@ import os
 import shutil
 from pathlib import Path
 
+from .auth import AuthMethod
 from .config import (
     ANTHROPIC_API_KEY,
     BWRAP_PATH,
@@ -14,12 +15,17 @@ from .config import (
 )
 
 
-def get_bwrap_command(user_id: str, workspace_path: Path) -> list[str]:
+def get_bwrap_command(
+    user_id: str,
+    workspace_path: Path,
+    auth_method: AuthMethod = AuthMethod.API_KEY,
+) -> list[str]:
     """Build the bubblewrap command for sandboxed Claude Code execution.
 
     Args:
         user_id: User identifier for the session
         workspace_path: Path to user's workspace directory
+        auth_method: Authentication method (OAUTH or API_KEY)
 
     Returns:
         List of command arguments for subprocess
@@ -63,6 +69,16 @@ def get_bwrap_command(user_id: str, workspace_path: Path) -> list[str]:
         # Create writable tmp and home
         "--tmpfs", "/tmp",
         "--tmpfs", "/home",
+    ])
+
+    # Mount .claude directory for credentials/session data
+    claude_dir = workspace_path / ".claude"
+    if claude_dir.exists():
+        cmd.extend([
+            "--bind", str(claude_dir), "/home/user/.claude",
+        ])
+
+    cmd.extend([
         # Set working directory
         "--chdir", "/workspace",
         # Set up /dev minimally
@@ -72,10 +88,16 @@ def get_bwrap_command(user_id: str, workspace_path: Path) -> list[str]:
         # Environment variables
         "--setenv", "HOME", "/home/user",
         "--setenv", "USER", "user",
-        "--setenv", "ANTHROPIC_API_KEY", ANTHROPIC_API_KEY,
         "--setenv", "TERM", "xterm-256color",
         "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin",
         "--setenv", "NODE_PATH", str(npm_lib) if npm_lib.exists() else "",
+    ])
+
+    # Only set API key if using API key auth method
+    if auth_method == AuthMethod.API_KEY and ANTHROPIC_API_KEY:
+        cmd.extend(["--setenv", "ANTHROPIC_API_KEY", ANTHROPIC_API_KEY])
+
+    cmd.extend([
         # Die with parent process
         "--die-with-parent",
         # The actual command to run
@@ -87,23 +109,27 @@ def get_bwrap_command(user_id: str, workspace_path: Path) -> list[str]:
     return cmd
 
 
-def setup_sandbox(user_id: str) -> tuple[Path, list[str]]:
+def setup_sandbox(
+    user_id: str,
+    auth_method: AuthMethod = AuthMethod.API_KEY,
+) -> tuple[Path, list[str]]:
     """Set up sandbox environment for a user.
 
     Args:
         user_id: User identifier
+        auth_method: Authentication method to use
 
     Returns:
         Tuple of (workspace_path, bwrap_command)
     """
     workspace = ensure_workspace(user_id)
 
-    # Create .claude directory for session data
+    # Create .claude directory for session data and credentials
     claude_dir = workspace / ".claude"
     claude_dir.mkdir(exist_ok=True)
 
     # Build bwrap command
-    cmd = get_bwrap_command(user_id, workspace)
+    cmd = get_bwrap_command(user_id, workspace, auth_method)
 
     return workspace, cmd
 
@@ -141,6 +167,8 @@ def is_claude_available() -> bool:
 def check_sandbox_requirements() -> dict[str, bool]:
     """Check all sandbox requirements.
 
+    Note: anthropic_key is optional since users can use OAuth.
+
     Returns:
         Dict with requirement names and availability status
     """
@@ -148,5 +176,6 @@ def check_sandbox_requirements() -> dict[str, bool]:
         "bubblewrap": is_bwrap_available(),
         "claude_code": is_claude_available(),
         "node": shutil.which("node") is not None,
-        "anthropic_key": bool(ANTHROPIC_API_KEY),
+        # Auth is checked per-user at session start
+        "anthropic_key_or_oauth": True,
     }

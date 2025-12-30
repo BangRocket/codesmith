@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from .auth import AuthMethod, get_auth_method
 from .config import SESSION_TIMEOUT
 from .output_parser import OutputBuffer, ParsedOutput
 from .pty_handler import PTYSession, create_pty_session
@@ -155,22 +156,36 @@ class SessionManager:
         self,
         user_id: str,
         resume_session_id: str | None = None,
+        auth_method: AuthMethod | None = None,
     ) -> UserSession:
         """Start a new Claude Code session for a user.
 
         Args:
             user_id: User ID
             resume_session_id: Optional session ID to resume
+            auth_method: Authentication method (auto-detected if None)
 
         Returns:
             The new or existing UserSession
+
+        Raises:
+            ValueError: If no valid authentication method available
         """
         # Stop existing session if any
         if user_id in self._sessions:
             await self.stop_session(user_id)
 
-        # Setup sandbox
-        workspace, bwrap_cmd = setup_sandbox(user_id)
+        # Determine auth method if not provided
+        if auth_method is None:
+            auth_method = get_auth_method(user_id)
+
+        if auth_method == AuthMethod.NONE:
+            raise ValueError(
+                "No authentication configured. Use /cc login or set ANTHROPIC_API_KEY."
+            )
+
+        # Setup sandbox with auth method
+        workspace, bwrap_cmd = setup_sandbox(user_id, auth_method)
 
         # Add resume flag if provided
         if resume_session_id:
