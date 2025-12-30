@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "codesmith"
+version = "0.1.0"
+description = "Claude Code to Discord bridge - run Claude Code sessions via Discord"
+authors = ["Joshua Heidorn <heidornj@icloud.com>"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.11"
+py-cord = "^2.6.1"
+python-dotenv = "^1.0.1"
+pyte = "^0.8.0"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.8"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
