@@ -22,7 +22,7 @@ Claude Code to Discord bridge - run Claude Code sessions through Discord.
 ### Environment Variables
 ```bash
 DISCORD_BOT_TOKEN=your_discord_bot_token
-ANTHROPIC_API_KEY=your_anthropic_api_key
+ANTHROPIC_API_KEY=your_anthropic_api_key  # Optional if users authenticate via /cc login
 CODESMITH_CHANNEL_ID=optional_channel_restriction
 ```
 
@@ -59,11 +59,23 @@ poetry run python -m codesmith.bot
 |---------|-------------|
 | `/cc start` | Start a new Claude Code session |
 | `/cc stop` | Stop your current session |
+| `/cc login` | Authenticate with your Claude Max/Pro subscription |
+| `/cc logout` | Remove your stored Claude credentials |
 | `/cc clear` | Clear conversation history |
 | `/cc compact` | Compact conversation to save context |
 | `/cc model <name>` | Change the model |
 | `/cc status` | Show session status |
 | `/cc requirements` | Check sandbox requirements |
+
+### Authentication
+
+Two authentication methods are supported:
+
+1. **Per-user OAuth** (recommended): Users run `/cc login` and follow the DM instructions to authenticate with their own Claude Max/Pro subscription.
+
+2. **Shared API key**: Set `ANTHROPIC_API_KEY` environment variable for all users to share.
+
+Per-user OAuth takes priority if both are configured.
 
 ### Interacting with Claude Code
 
