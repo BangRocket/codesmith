@@ -92,9 +92,19 @@ class TerminalEmulator:
         if lines:
             last_line = lines[-1].strip()
             # Check if it looks like a statusbar (has common indicators)
-            if any(x in last_line.lower() for x in [
-                "token", "cost", "model", "context", "$", "sonnet", "opus", "haiku"
-            ]):
+            if any(
+                x in last_line.lower()
+                for x in [
+                    "token",
+                    "cost",
+                    "model",
+                    "context",
+                    "$",
+                    "sonnet",
+                    "opus",
+                    "haiku",
+                ]
+            ):
                 return last_line
         return None
 
@@ -143,7 +153,7 @@ def parse_output(data: bytes) -> ParsedOutput:
         row = int(last_match.group(1))
         # If cursor moved to bottom area, text after might be statusbar
         if row > PTY_ROWS - 5:  # Bottom 5 rows
-            after_cursor = text[last_match.end():]
+            after_cursor = text[last_match.end() :]
             statusbar_text = strip_ansi(after_cursor).strip()
             if statusbar_text:
                 statusbar = statusbar_text
@@ -280,7 +290,7 @@ class OutputBuffer:
 
         # Calculate delta (new content only)
         if current_content.startswith(self._last_content):
-            new_content = current_content[len(self._last_content):]
+            new_content = current_content[len(self._last_content) :]
         else:
             new_content = current_content
 

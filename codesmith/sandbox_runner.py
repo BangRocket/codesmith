@@ -48,15 +48,31 @@ def get_bwrap_command(
         # Keep network access for API calls
         "--share-net",
         # Mount minimal root filesystem (read-only)
-        "--ro-bind", "/usr", "/usr",
-        "--ro-bind", "/lib", "/lib",
-        "--ro-bind", "/lib64", "/lib64",
-        "--ro-bind", "/bin", "/bin",
-        "--ro-bind", "/etc/ssl", "/etc/ssl",  # SSL certs
-        "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",  # DNS
-        "--ro-bind", "/etc/hosts", "/etc/hosts",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--ro-bind",
+        "/lib",
+        "/lib",
+        "--ro-bind",
+        "/lib64",
+        "/lib64",
+        "--ro-bind",
+        "/bin",
+        "/bin",
+        "--ro-bind",
+        "/etc/ssl",
+        "/etc/ssl",  # SSL certs
+        "--ro-bind",
+        "/etc/resolv.conf",
+        "/etc/resolv.conf",  # DNS
+        "--ro-bind",
+        "/etc/hosts",
+        "/etc/hosts",
         # Mount node and npm directories
-        "--ro-bind", str(Path(node_path).parent), str(Path(node_path).parent),
+        "--ro-bind",
+        str(Path(node_path).parent),
+        str(Path(node_path).parent),
     ]
 
     # Add npm global modules if they exist
@@ -64,47 +80,74 @@ def get_bwrap_command(
         cmd.extend(["--ro-bind", str(npm_lib), str(npm_lib)])
 
     # Mount user workspace as read-write
-    cmd.extend([
-        "--bind", str(workspace_path), "/workspace",
-        # Create writable tmp and home
-        "--tmpfs", "/tmp",
-        "--tmpfs", "/home",
-    ])
+    cmd.extend(
+        [
+            "--bind",
+            str(workspace_path),
+            "/workspace",
+            # Create writable tmp and home
+            "--tmpfs",
+            "/tmp",
+            "--tmpfs",
+            "/home",
+        ]
+    )
 
     # Mount .claude directory for credentials/session data
     claude_dir = workspace_path / ".claude"
     if claude_dir.exists():
-        cmd.extend([
-            "--bind", str(claude_dir), "/home/user/.claude",
-        ])
+        cmd.extend(
+            [
+                "--bind",
+                str(claude_dir),
+                "/home/user/.claude",
+            ]
+        )
 
-    cmd.extend([
-        # Set working directory
-        "--chdir", "/workspace",
-        # Set up /dev minimally
-        "--dev", "/dev",
-        # Proc filesystem
-        "--proc", "/proc",
-        # Environment variables
-        "--setenv", "HOME", "/home/user",
-        "--setenv", "USER", "user",
-        "--setenv", "TERM", "xterm-256color",
-        "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin",
-        "--setenv", "NODE_PATH", str(npm_lib) if npm_lib.exists() else "",
-    ])
+    cmd.extend(
+        [
+            # Set working directory
+            "--chdir",
+            "/workspace",
+            # Set up /dev minimally
+            "--dev",
+            "/dev",
+            # Proc filesystem
+            "--proc",
+            "/proc",
+            # Environment variables
+            "--setenv",
+            "HOME",
+            "/home/user",
+            "--setenv",
+            "USER",
+            "user",
+            "--setenv",
+            "TERM",
+            "xterm-256color",
+            "--setenv",
+            "PATH",
+            "/usr/local/bin:/usr/bin:/bin",
+            "--setenv",
+            "NODE_PATH",
+            str(npm_lib) if npm_lib.exists() else "",
+        ]
+    )
 
     # Only set API key if using API key auth method
     if auth_method == AuthMethod.API_KEY and ANTHROPIC_API_KEY:
         cmd.extend(["--setenv", "ANTHROPIC_API_KEY", ANTHROPIC_API_KEY])
 
-    cmd.extend([
-        # Die with parent process
-        "--die-with-parent",
-        # The actual command to run
-        "--",
-        claude_path,
-        "--dangerously-skip-permissions",
-    ])
+    cmd.extend(
+        [
+            # Die with parent process
+            "--die-with-parent",
+            # The actual command to run
+            "--",
+            claude_path,
+            "--dangerously-skip-permissions",
+        ]
+    )
 
     return cmd
 

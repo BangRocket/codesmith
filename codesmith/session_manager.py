@@ -205,9 +205,7 @@ class SessionManager:
         self._sessions[user_id] = session
 
         # Start output reading task
-        session._output_task = asyncio.create_task(
-            self._read_output_loop(user_id)
-        )
+        session._output_task = asyncio.create_task(self._read_output_loop(user_id))
 
         return session
 

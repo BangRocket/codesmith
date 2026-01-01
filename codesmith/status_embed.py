@@ -70,7 +70,7 @@ def parse_statusbar(statusbar: str | None) -> StatusData:
     )
     if token_match:
         token_str = token_match.group(1).replace(",", "")
-        match_text = statusbar[token_match.start():token_match.end()].lower()
+        match_text = statusbar[token_match.start() : token_match.end()].lower()
         multiplier = 1000 if "k" in match_text else 1
         try:
             data.input_tokens = int(float(token_str) * multiplier)
@@ -193,9 +193,7 @@ class StatusEmbed:
             "description": f"Session for {self.username}",
             "color": color,
             "fields": fields,
-            "footer": {
-                "text": "Last updated"
-            },
+            "footer": {"text": "Last updated"},
             "timestamp": self.last_update.isoformat(),
         }
 

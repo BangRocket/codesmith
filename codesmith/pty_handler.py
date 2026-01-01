@@ -125,15 +125,14 @@ class PTYSession:
         try:
             # Use select to check if data is available
             import select
+
             readable, _, _ = await loop.run_in_executor(
-                None,
-                lambda: select.select([self.master_fd], [], [], timeout)
+                None, lambda: select.select([self.master_fd], [], [], timeout)
             )
 
             if self.master_fd in readable:
                 data = await loop.run_in_executor(
-                    None,
-                    lambda: os.read(self.master_fd, 4096)
+                    None, lambda: os.read(self.master_fd, 4096)
                 )
                 if data:
                     self.last_activity = datetime.now()

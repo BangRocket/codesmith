@@ -1,10 +1,14 @@
-"""Codesmith Discord bot - Claude Code to Discord bridge."""
+"""Codesmith Discord bot using stream-json mode.
+
+This is an alternative to bot.py that uses Claude Code's --output-format stream-json
+instead of PTY terminal emulation.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from typing import TYPE_CHECKING
 
 import discord
 from discord.ext import commands, tasks
@@ -23,17 +27,23 @@ from .config import (
     EMBED_UPDATE_INTERVAL,
     is_configured,
 )
-from .output_parser import ParsedOutput, chunk_for_discord, format_for_discord
 from .sandbox_runner import check_sandbox_requirements
-from .session_manager import SessionManager, get_session_manager
 from .status_embed import EmbedManager
+from .stream_parser import StatusInfo
+from .stream_session_manager import (
+    StreamSessionManager,
+    get_stream_session_manager,
+)
+
+if TYPE_CHECKING:
+    pass
 
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("codesmith")
+logger = logging.getLogger("codesmith.stream")
 
 # Intents for the bot
 intents = discord.Intents.default()
@@ -41,40 +51,33 @@ intents.message_content = True
 intents.guilds = True
 
 
-class CodesmithBot(commands.Bot):
-    """Discord bot that bridges Claude Code sessions."""
+class StreamCodesmithBot(commands.Bot):
+    """Discord bot using stream-json for Claude Code sessions."""
 
     def __init__(self):
         """Initialize the bot."""
         super().__init__(
-            command_prefix="!",  # Not really used, we use slash commands
+            command_prefix="!",
             intents=intents,
         )
-        self.session_manager: SessionManager = get_session_manager()
+        self.session_manager: StreamSessionManager = get_stream_session_manager()
         self.embed_manager = EmbedManager()
-        self._output_queues: dict[str, asyncio.Queue] = {}
-        self._output_tasks: dict[str, asyncio.Task] = {}
-        self._pending_logins: set[str] = set()  # User IDs awaiting credential paste
+        self._user_channels: dict[str, discord.TextChannel] = {}
+        self._pending_logins: set[str] = set()
 
     async def setup_hook(self) -> None:
         """Called when the bot is starting up."""
-        # Register slash commands
         self.add_application_command(cc_group)
-
-        # Start session manager
         await self.session_manager.start()
-
-        # Start embed update loop
         self.update_embeds.start()
-
-        logger.info("Codesmith bot initialized")
+        logger.info("Stream Codesmith bot initialized")
 
     async def on_ready(self) -> None:
         """Called when the bot is connected and ready."""
         logger.info(f"Logged in as {self.user} (ID: {self.user.id})")
         logger.info(f"Connected to {len(self.guilds)} guild(s)")
+        logger.info("Using stream-json output mode")
 
-        # Check sandbox requirements
         reqs = check_sandbox_requirements()
         for req, available in reqs.items():
             status = "OK" if available else "MISSING"
@@ -82,7 +85,6 @@ class CodesmithBot(commands.Bot):
 
     async def on_message(self, message: discord.Message) -> None:
         """Handle incoming messages."""
-        # Ignore bot messages
         if message.author.bot:
             return
 
@@ -100,27 +102,24 @@ class CodesmithBot(commands.Bot):
 
         # Check if user has an active session
         if not self.session_manager.has_session(user_id):
-            return  # No session, ignore regular messages
+            return
 
-        # Send message content to Claude Code
-        success = await self.session_manager.send_input(user_id, message.content)
+        # Store channel for callbacks
+        self._user_channels[user_id] = message.channel
+
+        # Send message to Claude Code
+        success = await self.session_manager.send_message(user_id, message.content)
         if success:
-            # Add reaction to indicate message was sent
             try:
                 await message.add_reaction("📨")
             except discord.Forbidden:
                 pass
 
     async def _handle_credential_paste(self, message: discord.Message) -> None:
-        """Handle credential JSON pasted in DM.
-
-        Args:
-            message: Discord DM message
-        """
+        """Handle credential JSON pasted in DM."""
         user_id = str(message.author.id)
         content = message.content.strip()
 
-        # Validate the JSON
         credentials = validate_credentials_json(content)
 
         if credentials is None:
@@ -131,7 +130,6 @@ class CodesmithBot(commands.Bot):
             )
             return
 
-        # Store credentials
         try:
             store_credentials(user_id, credentials)
             self._pending_logins.discard(user_id)
@@ -146,99 +144,36 @@ class CodesmithBot(commands.Bot):
             logger.exception(f"Failed to store credentials for {user_id}")
             await message.channel.send(f"Failed to save credentials: {e}")
 
-    def _get_output_callback(self, channel: discord.TextChannel):
+    def _create_output_callback(self, channel: discord.TextChannel):
         """Create an output callback for a channel.
 
-        Args:
-            channel: Discord channel to send output to
-
-        Returns:
-            Callback function
+        The callback receives chunks of text to send to Discord.
         """
 
-        def callback(user_id: str, parsed: ParsedOutput) -> None:
-            # Queue output for processing
-            if user_id not in self._output_queues:
-                self._output_queues[user_id] = asyncio.Queue()
+        async def send_chunks(chunks: list[str]) -> None:
+            for chunk in chunks:
+                try:
+                    await channel.send(chunk)
+                except discord.HTTPException as e:
+                    logger.error(f"Failed to send message: {e}")
+                    break
+                if len(chunks) > 1:
+                    await asyncio.sleep(0.3)
 
-            self._output_queues[user_id].put_nowait((channel, parsed))
+        def callback(
+            user_id: str,
+            chunks: list[str],
+            status: StatusInfo | None,
+        ) -> None:
+            # Update embed with status
+            if status:
+                self.embed_manager.update_status(user_id, status.format_statusbar())
 
-            # Update statusbar in embed
-            if parsed.statusbar:
-                self.embed_manager.update_status(user_id, parsed.statusbar)
+            # Schedule sending chunks
+            if chunks:
+                asyncio.create_task(send_chunks(chunks))
 
         return callback
-
-    async def _process_output_queue(self, user_id: str) -> None:
-        """Process queued output for a user.
-
-        Args:
-            user_id: User ID
-        """
-        queue = self._output_queues.get(user_id)
-        if not queue:
-            return
-
-        buffer = ""
-        last_send = datetime.now()
-
-        while True:
-            try:
-                # Wait for output with timeout
-                channel, parsed = await asyncio.wait_for(queue.get(), timeout=0.5)
-
-                if parsed.content:
-                    buffer += parsed.content
-
-                # Send if buffer is getting large or enough time passed
-                elapsed = (datetime.now() - last_send).total_seconds()
-                if len(buffer) > 1500 or (buffer and elapsed > 1.0):
-                    await self._send_output(channel, buffer)
-                    buffer = ""
-                    last_send = datetime.now()
-
-            except TimeoutError:
-                # Timeout - send any remaining buffer
-                if buffer:
-                    channel = None
-                    # Try to get channel from last message
-                    if user_id in self._output_queues:
-                        try:
-                            channel, _ = self._output_queues[user_id].get_nowait()
-                        except asyncio.QueueEmpty:
-                            pass
-                    if channel:
-                        await self._send_output(channel, buffer)
-                    buffer = ""
-                    last_send = datetime.now()
-
-            except asyncio.CancelledError:
-                break
-
-    async def _send_output(self, channel: discord.TextChannel, content: str) -> None:
-        """Send output to Discord channel.
-
-        Args:
-            channel: Channel to send to
-            content: Content to send
-        """
-        if not content.strip():
-            return
-
-        # Format and chunk for Discord
-        formatted = format_for_discord(content)
-        chunks = chunk_for_discord(formatted)
-
-        for chunk in chunks:
-            try:
-                await channel.send(chunk)
-            except discord.HTTPException as e:
-                logger.error(f"Failed to send message: {e}")
-                break
-
-            # Small delay between chunks
-            if len(chunks) > 1:
-                await asyncio.sleep(0.5)
 
     @tasks.loop(seconds=EMBED_UPDATE_INTERVAL)
     async def update_embeds(self) -> None:
@@ -254,22 +189,15 @@ class CodesmithBot(commands.Bot):
     async def start_user_session(
         self,
         ctx: discord.ApplicationContext,
-        resume: bool = False,
     ) -> None:
-        """Start a Claude Code session for a user.
-
-        Args:
-            ctx: Discord application context
-            resume: Whether to resume previous session
-        """
+        """Start a Claude Code session for a user."""
         user_id = str(ctx.author.id)
 
-        # Check requirements
+        # Check requirements (less strict for stream mode - no bwrap needed)
         reqs = check_sandbox_requirements()
-        missing = [k for k, v in reqs.items() if not v]
-        if missing:
+        if not reqs.get("claude_code"):
             await ctx.respond(
-                f"Cannot start session. Missing requirements: {', '.join(missing)}",
+                "Claude Code CLI not found. Please install it first.",
                 ephemeral=True,
             )
             return
@@ -287,22 +215,20 @@ class CodesmithBot(commands.Bot):
 
         auth_type = "OAuth" if auth_method == AuthMethod.OAUTH else "API key"
         await ctx.respond(
-            f"Starting Claude Code session ({auth_type})...", ephemeral=True
+            f"Starting Claude Code session ({auth_type}, stream mode)...",
+            ephemeral=True,
         )
 
         try:
             # Start session
-            await self.session_manager.start_session(user_id)
+            await self.session_manager.start_session(user_id, auth_method)
 
             # Set up output callback
-            callback = self._get_output_callback(ctx.channel)
+            callback = self._create_output_callback(ctx.channel)
             self.session_manager.set_output_callback(user_id, callback)
 
-            # Start output processing task
-            self._output_queues[user_id] = asyncio.Queue()
-            self._output_tasks[user_id] = asyncio.create_task(
-                self._process_output_queue(user_id)
-            )
+            # Store channel
+            self._user_channels[user_id] = ctx.channel
 
             # Create status embed
             embed = self.embed_manager.get_or_create(user_id, ctx.author.display_name)
@@ -316,33 +242,21 @@ class CodesmithBot(commands.Bot):
 
         except Exception as e:
             logger.exception(f"Failed to start session for {user_id}")
-            await ctx.followup.send(
-                f"Failed to start session: {e}",
-                ephemeral=True,
-            )
+            await ctx.followup.send(f"Failed to start session: {e}", ephemeral=True)
 
     async def stop_user_session(self, ctx: discord.ApplicationContext) -> None:
-        """Stop a user's Claude Code session.
-
-        Args:
-            ctx: Discord application context
-        """
+        """Stop a user's Claude Code session."""
         user_id = str(ctx.author.id)
 
         if not self.session_manager.has_session(user_id):
             await ctx.respond("You don't have an active session.", ephemeral=True)
             return
 
-        # Cancel output task
-        task = self._output_tasks.pop(user_id, None)
-        if task:
-            task.cancel()
-
-        # Remove queue
-        self._output_queues.pop(user_id, None)
-
         # Stop session
         await self.session_manager.stop_session(user_id)
+
+        # Remove channel mapping
+        self._user_channels.pop(user_id, None)
 
         # Remove embed
         await self.embed_manager.remove(user_id)
@@ -351,18 +265,12 @@ class CodesmithBot(commands.Bot):
 
     async def close(self) -> None:
         """Clean up when bot is closing."""
-        # Stop all sessions
         await self.session_manager.stop()
-
-        # Cancel all output tasks
-        for task in self._output_tasks.values():
-            task.cancel()
-
         await super().close()
 
 
 # Create bot instance
-bot = CodesmithBot()
+bot = StreamCodesmithBot()
 
 # Slash command group
 cc_group = discord.SlashCommandGroup("cc", "Claude Code commands")
@@ -380,37 +288,14 @@ async def cc_stop(ctx: discord.ApplicationContext):
     await bot.stop_user_session(ctx)
 
 
-@cc_group.command(name="clear", description="Clear Claude Code conversation history")
-async def cc_clear(ctx: discord.ApplicationContext):
-    """Send /clear to Claude Code."""
+@cc_group.command(name="cancel", description="Cancel the current Claude request")
+async def cc_cancel(ctx: discord.ApplicationContext):
+    """Cancel the current request."""
     user_id = str(ctx.author.id)
-    if await bot.session_manager.send_slash_command(user_id, "/clear"):
-        await ctx.respond("Sent /clear to Claude Code", ephemeral=True)
+    if await bot.session_manager.cancel_request(user_id):
+        await ctx.respond("Request cancelled.", ephemeral=True)
     else:
-        await ctx.respond("No active session", ephemeral=True)
-
-
-@cc_group.command(name="compact", description="Compact Claude Code conversation")
-async def cc_compact(ctx: discord.ApplicationContext):
-    """Send /compact to Claude Code."""
-    user_id = str(ctx.author.id)
-    if await bot.session_manager.send_slash_command(user_id, "/compact"):
-        await ctx.respond("Sent /compact to Claude Code", ephemeral=True)
-    else:
-        await ctx.respond("No active session", ephemeral=True)
-
-
-@cc_group.command(name="model", description="Change Claude Code model")
-async def cc_model(
-    ctx: discord.ApplicationContext,
-    model: discord.Option(str, "Model name (e.g., sonnet, opus, haiku)"),
-):
-    """Send /model command to Claude Code."""
-    user_id = str(ctx.author.id)
-    if await bot.session_manager.send_slash_command(user_id, f"/model {model}"):
-        await ctx.respond(f"Sent /model {model} to Claude Code", ephemeral=True)
-    else:
-        await ctx.respond("No active session", ephemeral=True)
+        await ctx.respond("No active request to cancel.", ephemeral=True)
 
 
 @cc_group.command(name="status", description="Show session status")
@@ -423,15 +308,13 @@ async def cc_status(ctx: discord.ApplicationContext):
         await ctx.respond("No active session", ephemeral=True)
         return
 
-    uptime = int(info["uptime_seconds"])
-    idle = int(info["idle_seconds"])
-
     await ctx.respond(
         f"**Session Status**\n"
-        f"Uptime: {uptime // 60}m {uptime % 60}s\n"
-        f"Idle: {idle}s\n"
-        f"Workspace: `{info['workspace']}`\n"
-        f"Status: {'Active' if info['alive'] else 'Stopped'}",
+        f"Model: {info.get('model', 'Unknown')}\n"
+        f"Tokens: {info.get('total_tokens', 0):,}\n"
+        f"Cost: ${info.get('total_cost_usd', 0):.4f}\n"
+        f"Session ID: `{info.get('session_id', 'None')[:8]}...`\n"
+        f"Busy: {'Yes' if info.get('is_busy') else 'No'}",
         ephemeral=True,
     )
 
@@ -446,7 +329,7 @@ async def cc_requirements(ctx: discord.ApplicationContext):
         lines.append(f"{status} {req}")
 
     await ctx.respond(
-        "**Sandbox Requirements**\n" + "\n".join(lines),
+        "**Requirements**\n" + "\n".join(lines),
         ephemeral=True,
     )
 
@@ -458,7 +341,6 @@ async def cc_login(ctx: discord.ApplicationContext):
     """Start OAuth credential setup via DM."""
     user_id = str(ctx.author.id)
 
-    # Check if already authenticated
     if has_valid_credentials(user_id):
         await ctx.respond(
             "You already have OAuth credentials stored. "
@@ -467,16 +349,13 @@ async def cc_login(ctx: discord.ApplicationContext):
         )
         return
 
-    # Add to pending logins
     bot._pending_logins.add(user_id)
 
-    # Send instructions in channel
     await ctx.respond(
         "Check your DMs for authentication instructions.",
         ephemeral=True,
     )
 
-    # DM the user with instructions
     try:
         dm_channel = await ctx.author.create_dm()
         await dm_channel.send(
@@ -515,7 +394,6 @@ async def cc_logout(ctx: discord.ApplicationContext):
         )
 
 
-# Add command group to bot
 bot.add_application_command(cc_group)
 
 
@@ -526,7 +404,7 @@ def main():
         logger.error("Set DISCORD_BOT_TOKEN in environment")
         return
 
-    logger.info("Starting Codesmith bot...")
+    logger.info("Starting Stream Codesmith bot...")
     bot.run(DISCORD_BOT_TOKEN)
 
 

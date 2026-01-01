@@ -29,7 +29,7 @@ EMBED_UPDATE_INTERVAL = 3.0  # Seconds between status embed updates
 
 # PTY Configuration
 PTY_COLS = 120  # Terminal width
-PTY_ROWS = 40   # Terminal height
+PTY_ROWS = 40  # Terminal height
 
 # bubblewrap paths
 BWRAP_PATH = "/usr/bin/bwrap"
