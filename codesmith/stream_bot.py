@@ -308,12 +308,15 @@ async def cc_status(ctx: discord.ApplicationContext):
         await ctx.respond("No active session", ephemeral=True)
         return
 
+    session_id = info.get("session_id")
+    session_id_display = f"`{session_id[:8]}...`" if session_id else "None"
+
     await ctx.respond(
         f"**Session Status**\n"
-        f"Model: {info.get('model', 'Unknown')}\n"
+        f"Model: {info.get('model') or 'Unknown'}\n"
         f"Tokens: {info.get('total_tokens', 0):,}\n"
         f"Cost: ${info.get('total_cost_usd', 0):.4f}\n"
-        f"Session ID: `{info.get('session_id', 'None')[:8]}...`\n"
+        f"Session ID: {session_id_display}\n"
         f"Busy: {'Yes' if info.get('is_busy') else 'No'}",
         ephemeral=True,
     )
