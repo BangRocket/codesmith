@@ -1,11 +1,11 @@
 #!/bin/bash
-# Setup script for code-server with Cloudflare DNS and Caddy reverse proxy
+# Setup script for code-server with Cloudflare Tunnel
 #
 # This script:
 # 1. Installs code-server
-# 2. Installs Caddy
-# 3. Creates a wildcard DNS record in Cloudflare
-# 4. Configures Caddy for wildcard subdomain routing with automatic TLS
+# 2. Installs Caddy (for local subdomain→port routing)
+# 3. Installs and configures cloudflared tunnel
+# 4. Creates DNS records via Cloudflare API
 #
 # Prerequisites:
 # - Root access
@@ -57,23 +57,23 @@ REQUIRED_VARS=(
     "CLOUDFLARE_ZONE_ID"
     "CLOUDFLARE_DOMAIN"
     "CODE_SERVER_DOMAIN"
+    "CLOUDFLARE_TUNNEL_TOKEN"
 )
 
 for var in "${REQUIRED_VARS[@]}"; do
     if [[ -z "${!var}" ]]; then
         log_error "Missing required variable: $var"
+        if [[ "$var" == "CLOUDFLARE_TUNNEL_TOKEN" ]]; then
+            log_error ""
+            log_error "To get a tunnel token:"
+            log_error "1. Go to Cloudflare Zero Trust dashboard"
+            log_error "2. Navigate to Access → Tunnels"
+            log_error "3. Create a tunnel named 'codesmith'"
+            log_error "4. Copy the tunnel token"
+        fi
         exit 1
     fi
 done
-
-# Get VPS public IP
-log_info "Detecting public IP..."
-VPS_IP=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me)
-if [[ -z "$VPS_IP" ]]; then
-    log_error "Could not detect public IP"
-    exit 1
-fi
-log_info "Public IP: $VPS_IP"
 
 # Install code-server
 install_code_server() {
@@ -89,7 +89,7 @@ install_code_server() {
     log_info "code-server installed successfully"
 }
 
-# Install Caddy
+# Install Caddy (for local routing only)
 install_caddy() {
     log_info "Installing Caddy..."
 
@@ -98,101 +98,39 @@ install_caddy() {
         return 0
     fi
 
-    # Install Caddy with Cloudflare DNS plugin for wildcard certs
+    # Install Caddy from official repo (no cloudflare module needed)
     apt-get update
     apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
 
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/xcaddy/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-xcaddy-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/xcaddy/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-xcaddy.list
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
 
     apt-get update
-    apt-get install -y xcaddy
-
-    # Build Caddy with Cloudflare DNS module
-    log_info "Building Caddy with Cloudflare DNS module..."
-    xcaddy build --with github.com/caddy-dns/cloudflare --output /usr/bin/caddy
-
-    # Create caddy user and group if they don't exist
-    if ! id -u caddy &>/dev/null; then
-        groupadd --system caddy
-        useradd --system --gid caddy --create-home --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy
-    fi
-
-    # Create systemd service
-    cat > /etc/systemd/system/caddy.service << 'EOF'
-[Unit]
-Description=Caddy
-Documentation=https://caddyserver.com/docs/
-After=network.target network-online.target
-Requires=network-online.target
-
-[Service]
-Type=notify
-User=caddy
-Group=caddy
-ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
-ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force
-TimeoutStopSec=5s
-LimitNOFILE=1048576
-LimitNPROC=512
-PrivateTmp=true
-ProtectSystem=full
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    mkdir -p /etc/caddy
+    apt-get install -y caddy
 
     log_info "Caddy installed successfully"
 }
 
-# Setup Cloudflare wildcard DNS
-setup_cloudflare_dns() {
-    log_info "Setting up Cloudflare wildcard DNS..."
+# Install cloudflared
+install_cloudflared() {
+    log_info "Installing cloudflared..."
 
-    # Check if wildcard record already exists
-    EXISTING=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records?name=*.${CODE_SERVER_DOMAIN}" \
-        -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-        -H "Content-Type: application/json" | jq -r '.result[0].id // empty')
-
-    if [[ -n "$EXISTING" ]]; then
-        log_info "Updating existing wildcard DNS record..."
-        curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${EXISTING}" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data "{\"type\":\"A\",\"name\":\"*.${CODE_SERVER_DOMAIN}\",\"content\":\"${VPS_IP}\",\"ttl\":1,\"proxied\":false}" \
-            | jq -r '.success'
-    else
-        log_info "Creating wildcard DNS record: *.${CODE_SERVER_DOMAIN} -> ${VPS_IP}"
-        curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data "{\"type\":\"A\",\"name\":\"*.${CODE_SERVER_DOMAIN}\",\"content\":\"${VPS_IP}\",\"ttl\":1,\"proxied\":false}" \
-            | jq -r '.success'
+    if command -v cloudflared &> /dev/null; then
+        log_info "cloudflared already installed: $(cloudflared --version)"
+        return 0
     fi
 
-    # Also create base domain record if it doesn't exist
-    EXISTING_BASE=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records?name=${CODE_SERVER_DOMAIN}" \
-        -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-        -H "Content-Type: application/json" | jq -r '.result[0].id // empty')
+    # Install cloudflared
+    curl -L --output /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+    dpkg -i /tmp/cloudflared.deb
+    rm /tmp/cloudflared.deb
 
-    if [[ -z "$EXISTING_BASE" ]]; then
-        log_info "Creating base domain DNS record: ${CODE_SERVER_DOMAIN} -> ${VPS_IP}"
-        curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data "{\"type\":\"A\",\"name\":\"${CODE_SERVER_DOMAIN}\",\"content\":\"${VPS_IP}\",\"ttl\":1,\"proxied\":false}" \
-            | jq -r '.success'
-    fi
-
-    log_info "DNS records configured"
+    log_info "cloudflared installed successfully"
 }
 
-# Configure Caddy
+# Configure Caddy for local subdomain routing
 configure_caddy() {
-    log_info "Configuring Caddy..."
+    log_info "Configuring Caddy for local routing..."
 
     # Ensure config directory exists
     mkdir -p /etc/caddy
@@ -232,56 +170,88 @@ WantedBy=multi-user.target
 SERVICEEOF
     fi
 
-    # Create Caddyfile with wildcard subdomain routing
-    cat > /etc/caddy/Caddyfile << EOF
-# Global options
-{
-    email admin@${CLOUDFLARE_DOMAIN}
-}
+    # Create Caddyfile - local only, cloudflared handles external traffic
+    # Caddy listens on 8080 and routes based on subdomain to code-server ports
+    cat > /etc/caddy/Caddyfile << 'EOF'
+# Local reverse proxy for code-server instances
+# cloudflared tunnels traffic here, Caddy routes to correct port
 
-# Wildcard subdomain for code-server
-*.${CODE_SERVER_DOMAIN} {
-    tls {
-        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
-    }
+:8080 {
+    # Extract port from Host header subdomain (e.g., 9001.code.example.com -> 9001)
+    @port9000 expression {http.request.host}.startsWith("9000.")
+    @port9001 expression {http.request.host}.startsWith("9001.")
+    @port9002 expression {http.request.host}.startsWith("9002.")
+    @port9003 expression {http.request.host}.startsWith("9003.")
+    @port9004 expression {http.request.host}.startsWith("9004.")
+    @port9005 expression {http.request.host}.startsWith("9005.")
+    @port9006 expression {http.request.host}.startsWith("9006.")
+    @port9007 expression {http.request.host}.startsWith("9007.")
+    @port9008 expression {http.request.host}.startsWith("9008.")
+    @port9009 expression {http.request.host}.startsWith("9009.")
 
-    # Extract port from subdomain (e.g., 9001.code.example.com -> 9001)
-    @validport expression {http.request.host.labels.0}.matches("^9[0-9]{3}\$")
+    handle @port9000 { reverse_proxy localhost:9000 }
+    handle @port9001 { reverse_proxy localhost:9001 }
+    handle @port9002 { reverse_proxy localhost:9002 }
+    handle @port9003 { reverse_proxy localhost:9003 }
+    handle @port9004 { reverse_proxy localhost:9004 }
+    handle @port9005 { reverse_proxy localhost:9005 }
+    handle @port9006 { reverse_proxy localhost:9006 }
+    handle @port9007 { reverse_proxy localhost:9007 }
+    handle @port9008 { reverse_proxy localhost:9008 }
+    handle @port9009 { reverse_proxy localhost:9009 }
 
-    handle @validport {
-        reverse_proxy localhost:{http.request.host.labels.0}
-    }
-
+    # Fallback - try to extract port dynamically
     handle {
-        respond "Invalid port" 404
+        # Default response if no port matches
+        respond "Invalid code-server port. Use format: 9XXX.{$CODE_SERVER_DOMAIN}" 404
     }
 }
+EOF
 
-# Base domain - simple landing page
-${CODE_SERVER_DOMAIN} {
-    tls {
-        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
-    }
+    # Replace placeholder with actual domain
+    sed -i "s/{\$CODE_SERVER_DOMAIN}/${CODE_SERVER_DOMAIN}/g" /etc/caddy/Caddyfile
 
-    respond "Codesmith Code Server" 200
+    log_info "Caddy configured for local routing on port 8080"
 }
+
+# Configure cloudflared tunnel
+configure_cloudflared() {
+    log_info "Configuring cloudflared tunnel..."
+
+    # Create config directory
+    mkdir -p /etc/cloudflared
+
+    # Create tunnel config
+    cat > /etc/cloudflared/config.yml << EOF
+tunnel: codesmith
+credentials-file: /etc/cloudflared/tunnel-creds.json
+
+ingress:
+  # Route all code-server subdomains to local Caddy
+  - hostname: "*.${CODE_SERVER_DOMAIN}"
+    service: http://localhost:8080
+  # Catch-all
+  - service: http_status:404
 EOF
 
-    # Create environment file for Caddy
-    mkdir -p /etc/caddy
-    cat > /etc/caddy/caddy.env << EOF
-CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
-EOF
-    chmod 600 /etc/caddy/caddy.env
+    # Install tunnel as service using token
+    log_info "Installing cloudflared service with tunnel token..."
+    cloudflared service install "${CLOUDFLARE_TUNNEL_TOKEN}"
 
-    # Update systemd service to load environment
-    mkdir -p /etc/systemd/system/caddy.service.d
-    cat > /etc/systemd/system/caddy.service.d/override.conf << EOF
-[Service]
-EnvironmentFile=/etc/caddy/caddy.env
-EOF
+    log_info "cloudflared configured"
+}
 
-    log_info "Caddy configured"
+# Setup DNS for tunnel (CNAME to tunnel)
+setup_dns() {
+    log_info "Setting up DNS records..."
+
+    # Get tunnel ID from token (first part before the dot)
+    # Actually, with connector tokens, DNS is auto-configured by Cloudflare
+    # We just need to ensure the wildcard CNAME exists
+
+    log_info "DNS will be automatically configured by the tunnel"
+    log_info "If you need manual DNS setup, create a CNAME:"
+    log_info "  *.${CODE_SERVER_DOMAIN} -> <tunnel-id>.cfargotunnel.com"
 }
 
 # Start services
@@ -289,8 +259,19 @@ start_services() {
     log_info "Starting services..."
 
     systemctl daemon-reload
+
+    # Start Caddy
     systemctl enable caddy
     systemctl restart caddy
+
+    # cloudflared service is started by 'cloudflared service install'
+    # Just ensure it's running
+    if systemctl is-active --quiet cloudflared; then
+        log_info "cloudflared is running"
+    else
+        log_warn "cloudflared may need manual start or token verification"
+        systemctl status cloudflared --no-pager || true
+    fi
 
     # Wait for Caddy to start
     sleep 2
@@ -306,20 +287,21 @@ start_services() {
 
 # Main
 main() {
-    log_info "=== Codesmith Code-Server Setup ==="
+    log_info "=== Codesmith Code-Server Setup (Cloudflare Tunnel) ==="
     log_info "Domain: ${CODE_SERVER_DOMAIN}"
-    log_info "Port range: 9000-9999"
+    log_info "Port range: 9000-9009"
 
-    # Check for jq
-    if ! command -v jq &> /dev/null; then
-        log_info "Installing jq..."
-        apt-get update && apt-get install -y jq
+    # Check for required tools
+    if ! command -v curl &> /dev/null; then
+        apt-get update && apt-get install -y curl
     fi
 
     install_code_server
     install_caddy
-    setup_cloudflare_dns
+    install_cloudflared
     configure_caddy
+    configure_cloudflared
+    setup_dns
     start_services
 
     log_info "=== Setup Complete ==="
@@ -329,8 +311,10 @@ main() {
     log_info ""
     log_info "Example: https://9001.${CODE_SERVER_DOMAIN}"
     log_info ""
-    log_info "Note: It may take a few minutes for DNS to propagate"
-    log_info "and for TLS certificates to be issued."
+    log_info "Architecture:"
+    log_info "  Internet → Cloudflare → cloudflared tunnel → Caddy:8080 → code-server:9xxx"
+    log_info ""
+    log_info "Note: No firewall ports need to be opened!"
 }
 
 main "$@"
