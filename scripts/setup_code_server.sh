@@ -218,21 +218,20 @@ EOF
 configure_cloudflared() {
     log_info "Configuring cloudflared tunnel..."
 
+    # Check if service is already installed
+    if [[ -f /etc/systemd/system/cloudflared.service ]]; then
+        log_info "cloudflared service already installed"
+        log_info "To add code-server routing, edit /etc/cloudflared/config.yml"
+        log_info "Add this ingress rule:"
+        log_info "  - hostname: \"*.${CODE_SERVER_DOMAIN}\""
+        log_info "    service: http://localhost:8080"
+        log_info ""
+        log_info "Then restart: sudo systemctl restart cloudflared"
+        return 0
+    fi
+
     # Create config directory
     mkdir -p /etc/cloudflared
-
-    # Create tunnel config
-    cat > /etc/cloudflared/config.yml << EOF
-tunnel: codesmith
-credentials-file: /etc/cloudflared/tunnel-creds.json
-
-ingress:
-  # Route all code-server subdomains to local Caddy
-  - hostname: "*.${CODE_SERVER_DOMAIN}"
-    service: http://localhost:8080
-  # Catch-all
-  - service: http_status:404
-EOF
 
     # Install tunnel as service using token
     log_info "Installing cloudflared service with tunnel token..."
