@@ -197,6 +197,41 @@ configure_caddy() {
     # Ensure config directory exists
     mkdir -p /etc/caddy
 
+    # Create caddy user and group if they don't exist
+    if ! id -u caddy &>/dev/null; then
+        log_info "Creating caddy user..."
+        groupadd --system caddy 2>/dev/null || true
+        useradd --system --gid caddy --create-home --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy 2>/dev/null || true
+    fi
+
+    # Ensure systemd service exists
+    if [[ ! -f /etc/systemd/system/caddy.service ]]; then
+        log_info "Creating Caddy systemd service..."
+        cat > /etc/systemd/system/caddy.service << 'SERVICEEOF'
+[Unit]
+Description=Caddy
+Documentation=https://caddyserver.com/docs/
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+LimitNPROC=512
+PrivateTmp=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+SERVICEEOF
+    fi
+
     # Create Caddyfile with wildcard subdomain routing
     cat > /etc/caddy/Caddyfile << EOF
 # Global options
