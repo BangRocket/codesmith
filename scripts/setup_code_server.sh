@@ -194,6 +194,9 @@ setup_cloudflare_dns() {
 configure_caddy() {
     log_info "Configuring Caddy..."
 
+    # Ensure config directory exists
+    mkdir -p /etc/caddy
+
     # Create Caddyfile with wildcard subdomain routing
     cat > /etc/caddy/Caddyfile << EOF
 # Global options
