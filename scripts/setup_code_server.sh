@@ -176,7 +176,7 @@ SERVICEEOF
 # Local reverse proxy for code-server instances
 # cloudflared tunnels traffic here, Caddy routes to correct port
 
-:8080 {
+:8090 {
     # Route based on subdomain (e.g., 9001.code.example.com -> localhost:9001)
     @port9000 host 9000.*
     @port9001 host 9001.*
@@ -230,7 +230,7 @@ EOF
     # Replace placeholder with actual domain
     sed -i "s/{\$CODE_SERVER_DOMAIN}/${CODE_SERVER_DOMAIN}/g" /etc/caddy/Caddyfile
 
-    log_info "Caddy configured for local routing on port 8080"
+    log_info "Caddy configured for local routing on port 8090"
 }
 
 # Configure cloudflared tunnel
@@ -243,7 +243,7 @@ configure_cloudflared() {
         log_info "To add code-server routing, edit /etc/cloudflared/config.yml"
         log_info "Add this ingress rule:"
         log_info "  - hostname: \"*.${CODE_SERVER_DOMAIN}\""
-        log_info "    service: http://localhost:8080"
+        log_info "    service: http://localhost:8090"
         log_info ""
         log_info "Then restart: sudo systemctl restart cloudflared"
         return 0
@@ -330,7 +330,7 @@ main() {
     log_info "Example: https://9001.${CODE_SERVER_DOMAIN}"
     log_info ""
     log_info "Architecture:"
-    log_info "  Internet → Cloudflare → cloudflared tunnel → Caddy:8080 → code-server:9xxx"
+    log_info "  Internet → Cloudflare → cloudflared tunnel → Caddy:8090 → code-server:9xxx"
     log_info ""
     log_info "Note: No firewall ports need to be opened!"
 }
