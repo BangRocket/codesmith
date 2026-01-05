@@ -134,6 +134,8 @@ class StreamCodesmithBot(commands.Bot):
         user_id = session.user_id
         channel = message.channel
 
+        logger.info(f"[{user_id}] Processing message: {message.content[:50]}...")
+
         # Mark session as busy
         session.is_busy = True
 
@@ -146,17 +148,26 @@ class StreamCodesmithBot(commands.Bot):
             # Accumulate text for batched sending
             text_buffer = ""
             last_send = asyncio.get_event_loop().time()
+            message_count = 0
+
+            logger.info(f"[{user_id}] Starting Claude runner")
 
             async for msg in session.runner.run(message.content):
+                message_count += 1
                 session.touch()
+
+                logger.debug(f"[{user_id}] Message {message_count}: type={msg.type}")
 
                 # Handle assistant messages (Claude's response)
                 if msg.text:
+                    logger.info(f"[{user_id}] Got text ({len(msg.text)} chars)")
                     text_buffer += msg.text
 
                     # Send if buffer is large enough or enough time passed
                     current_time = asyncio.get_event_loop().time()
                     if len(text_buffer) > 1500 or (current_time - last_send) > 1.0:
+                        buf_len = len(text_buffer)
+                        logger.debug(f"[{user_id}] Sending buffer ({buf_len} chars)")
                         await self._send_text(channel, text_buffer)
                         text_buffer = ""
                         last_send = current_time
@@ -164,11 +175,14 @@ class StreamCodesmithBot(commands.Bot):
                 # Handle tool use notifications
                 if msg.tool_uses:
                     tool_names = [t.get("name", "unknown") for t in msg.tool_uses]
+                    logger.info(f"[{user_id}] Tool uses: {tool_names}")
                     tools_str = ", ".join(f"`{n}`" for n in tool_names)
                     await channel.send(f"*Using tools: {tools_str}*")
 
                 # Handle result (end of response)
                 if msg.is_result:
+                    cost = msg.cost_usd
+                    logger.info(f"[{user_id}] Result: err={msg.is_error}, ${cost:.4f}")
                     session.update_stats(msg)
 
                     # Update embed with new stats
@@ -176,16 +190,20 @@ class StreamCodesmithBot(commands.Bot):
                         user_id, session.format_statusbar()
                     )
 
+            logger.info(f"[{user_id}] Finished processing ({message_count} messages)")
+
             # Send any remaining buffered text
             if text_buffer:
+                logger.debug(f"[{user_id}] Sending final ({len(text_buffer)} chars)")
                 await self._send_text(channel, text_buffer)
 
         except Exception as e:
-            logger.exception(f"Error processing message for {user_id}")
+            logger.exception(f"[{user_id}] Error processing message")
             await channel.send(f"**Error:** {e}")
 
         finally:
             session.is_busy = False
+            logger.info(f"[{user_id}] Message processing complete")
 
     async def _send_text(
         self,

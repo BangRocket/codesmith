@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("codesmith.runner")
 
 
 @dataclass
@@ -165,6 +168,11 @@ class ClaudeRunner:
         # Ensure workspace exists
         self.workspace.mkdir(parents=True, exist_ok=True)
 
+        logger.info("Starting Claude Code process")
+        logger.debug(f"Command: {' '.join(args)}")
+        logger.debug(f"Working directory: {self.workspace}")
+        logger.debug(f"HOME={env.get('HOME')}")
+
         self.process = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.PIPE,
@@ -174,15 +182,25 @@ class ClaudeRunner:
             env=env,
         )
 
+        logger.info(f"Process started with PID {self.process.pid}")
+
         # Close stdin since we're using -p mode (prompt passed as argument)
         if self.process.stdin:
             self.process.stdin.close()
 
+        # Start stderr reader task
+        stderr_task = asyncio.create_task(self._read_stderr())
+
         try:
+            line_count = 0
             async for line in self.process.stdout:
                 line_str = line.decode("utf-8", errors="replace").strip()
                 if not line_str:
                     continue
+
+                line_count += 1
+                truncated = line_str[:200] + "..." if len(line_str) > 200 else line_str
+                logger.debug(f"[stdout:{line_count}] {truncated}")
 
                 try:
                     data = json.loads(line_str)
@@ -191,28 +209,63 @@ class ClaudeRunner:
                         content=data,
                     )
 
+                    logger.info(f"Received message type: {msg.type}")
+
                     # Track session ID and model from system/result messages
                     if msg.session_id:
+                        logger.info(f"Session ID: {msg.session_id}")
                         self.session_id = msg.session_id
                     if msg.model:
+                        logger.info(f"Model: {msg.model}")
                         self.model = msg.model
+
+                    # Log specific message details
+                    if msg.type == "assistant" and msg.text:
+                        txt = msg.text
+                        preview = txt[:100] + "..." if len(txt) > 100 else txt
+                        logger.debug(f"Assistant text: {preview}")
+                    if msg.type == "result":
+                        logger.info(f"Result: err={msg.is_error}, ${msg.cost_usd:.4f}")
 
                     if on_message:
                         try:
                             on_message(msg)
-                        except Exception:
-                            pass  # Don't let callback errors stop the stream
+                        except Exception as e:
+                            logger.exception(f"Callback error: {e}")
 
                     yield msg
 
-                except json.JSONDecodeError:
-                    # Skip non-JSON lines (e.g., stderr leaking through)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Non-JSON line: {line_str[:100]} (error: {e})")
                     continue
+
+            logger.info(f"Finished reading stdout ({line_count} lines)")
 
         finally:
             # Wait for process to complete
             if self.process:
-                await self.process.wait()
+                return_code = await self.process.wait()
+                logger.info(f"Process exited with code {return_code}")
+
+            # Wait for stderr task
+            stderr_task.cancel()
+            try:
+                await stderr_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _read_stderr(self) -> None:
+        """Read and log stderr output."""
+        if not self.process or not self.process.stderr:
+            return
+
+        try:
+            async for line in self.process.stderr:
+                line_str = line.decode("utf-8", errors="replace").strip()
+                if line_str:
+                    logger.warning(f"[stderr] {line_str}")
+        except asyncio.CancelledError:
+            pass
 
     async def cancel(self) -> None:
         """Cancel the current run."""
