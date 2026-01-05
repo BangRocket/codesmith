@@ -177,33 +177,52 @@ SERVICEEOF
 # cloudflared tunnels traffic here, Caddy routes to correct port
 
 :8080 {
-    # Extract port from Host header subdomain (e.g., 9001.code.example.com -> 9001)
-    @port9000 expression {http.request.host}.startsWith("9000.")
-    @port9001 expression {http.request.host}.startsWith("9001.")
-    @port9002 expression {http.request.host}.startsWith("9002.")
-    @port9003 expression {http.request.host}.startsWith("9003.")
-    @port9004 expression {http.request.host}.startsWith("9004.")
-    @port9005 expression {http.request.host}.startsWith("9005.")
-    @port9006 expression {http.request.host}.startsWith("9006.")
-    @port9007 expression {http.request.host}.startsWith("9007.")
-    @port9008 expression {http.request.host}.startsWith("9008.")
-    @port9009 expression {http.request.host}.startsWith("9009.")
+    # Route based on subdomain (e.g., 9001.code.example.com -> localhost:9001)
+    @port9000 host 9000.*
+    @port9001 host 9001.*
+    @port9002 host 9002.*
+    @port9003 host 9003.*
+    @port9004 host 9004.*
+    @port9005 host 9005.*
+    @port9006 host 9006.*
+    @port9007 host 9007.*
+    @port9008 host 9008.*
+    @port9009 host 9009.*
 
-    handle @port9000 { reverse_proxy localhost:9000 }
-    handle @port9001 { reverse_proxy localhost:9001 }
-    handle @port9002 { reverse_proxy localhost:9002 }
-    handle @port9003 { reverse_proxy localhost:9003 }
-    handle @port9004 { reverse_proxy localhost:9004 }
-    handle @port9005 { reverse_proxy localhost:9005 }
-    handle @port9006 { reverse_proxy localhost:9006 }
-    handle @port9007 { reverse_proxy localhost:9007 }
-    handle @port9008 { reverse_proxy localhost:9008 }
-    handle @port9009 { reverse_proxy localhost:9009 }
+    handle @port9000 {
+        reverse_proxy localhost:9000
+    }
+    handle @port9001 {
+        reverse_proxy localhost:9001
+    }
+    handle @port9002 {
+        reverse_proxy localhost:9002
+    }
+    handle @port9003 {
+        reverse_proxy localhost:9003
+    }
+    handle @port9004 {
+        reverse_proxy localhost:9004
+    }
+    handle @port9005 {
+        reverse_proxy localhost:9005
+    }
+    handle @port9006 {
+        reverse_proxy localhost:9006
+    }
+    handle @port9007 {
+        reverse_proxy localhost:9007
+    }
+    handle @port9008 {
+        reverse_proxy localhost:9008
+    }
+    handle @port9009 {
+        reverse_proxy localhost:9009
+    }
 
-    # Fallback - try to extract port dynamically
+    # Fallback
     handle {
-        # Default response if no port matches
-        respond "Invalid code-server port. Use format: 9XXX.{$CODE_SERVER_DOMAIN}" 404
+        respond "Invalid code-server port" 404
     }
 }
 EOF
