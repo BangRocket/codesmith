@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .auth import AuthMethod
 from .claude_runner import ClaudeMessage, ClaudeRunner
+from .code_server import CodeServerInfo
 from .config import ANTHROPIC_API_KEY, ensure_workspace
 
 
@@ -32,6 +33,9 @@ class StreamSession:
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_cost_usd: float = 0.0
+
+    # Code-server instance (if running)
+    code_server: CodeServerInfo | None = None
 
     @property
     def session_id(self) -> str | None:

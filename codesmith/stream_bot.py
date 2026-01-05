@@ -21,6 +21,7 @@ from .auth import (
     store_credentials,
     validate_credentials_json,
 )
+from .code_server import CodeServerManager, get_code_server_manager
 from .config import (
     CODESMITH_CHANNEL_ID,
     DISCORD_BOT_TOKEN,
@@ -66,6 +67,7 @@ class StreamCodesmithBot(commands.Bot):
             intents=intents,
         )
         self.session_manager: StreamSessionManager = get_stream_session_manager()
+        self.code_server_manager: CodeServerManager = get_code_server_manager()
         self.embed_manager = EmbedManager()
         self._user_channels: dict[str, discord.TextChannel] = {}
         self._pending_logins: set[str] = set()
@@ -305,7 +307,11 @@ class StreamCodesmithBot(commands.Bot):
 
         try:
             # Start session
-            await self.session_manager.start_session(user_id, auth_method)
+            session = await self.session_manager.start_session(user_id, auth_method)
+
+            # Start code-server
+            cs_info = await self.code_server_manager.start(user_id, session.workspace)
+            session.code_server = cs_info
 
             # Store channel for this user
             self._user_channels[user_id] = ctx.channel
@@ -315,7 +321,9 @@ class StreamCodesmithBot(commands.Bot):
             await embed.create_message(ctx.channel)
 
             await ctx.followup.send(
-                "Session started! Messages in this channel go to Claude Code.\n"
+                f"Session started! Messages in this channel go to Claude Code.\n"
+                f"**Code Editor:** {cs_info.url}\n"
+                f"**Password:** ||{cs_info.password}||\n"
                 "Use `/cc stop` to end the session.",
                 ephemeral=True,
             )
@@ -332,6 +340,9 @@ class StreamCodesmithBot(commands.Bot):
             await ctx.respond("You don't have an active session.", ephemeral=True)
             return
 
+        # Stop code-server
+        await self.code_server_manager.stop(user_id)
+
         # Stop session
         await self.session_manager.stop_session(user_id)
 
@@ -345,6 +356,9 @@ class StreamCodesmithBot(commands.Bot):
 
     async def close(self) -> None:
         """Clean up when bot is closing."""
+        # Stop all code-servers
+        await self.code_server_manager.stop_all()
+
         # Stop all sessions
         for user_id in list(self.session_manager.get_all_sessions().keys()):
             await self.session_manager.stop_session(user_id)
@@ -424,6 +438,27 @@ async def cc_requirements(ctx: discord.ApplicationContext):
 
     await ctx.respond(
         "**Requirements**\n" + "\n".join(lines),
+        ephemeral=True,
+    )
+
+
+@cc_group.command(name="code", description="Get link to code editor")
+async def cc_code(ctx: discord.ApplicationContext):
+    """Get the code-server URL for your session."""
+    user_id = str(ctx.author.id)
+    session = bot.session_manager.get_session(user_id)
+
+    if not session:
+        await ctx.respond("No active session.", ephemeral=True)
+        return
+
+    if not session.code_server:
+        await ctx.respond("Code editor not available.", ephemeral=True)
+        return
+
+    await ctx.respond(
+        f"**Code Editor:** {session.code_server.url}\n"
+        f"**Password:** ||{session.code_server.password}||",
         ephemeral=True,
     )
 
