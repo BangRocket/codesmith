@@ -17,6 +17,9 @@
 
 set -e
 
+# Ensure sbin paths are in PATH (needed for groupadd, useradd, etc.)
+export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
