@@ -28,6 +28,7 @@ DISCORD_MSG_LIMIT = 2000  # Discord message character limit
 EMBED_UPDATE_INTERVAL = 3.0  # Seconds between status embed updates
 
 # Code-server Configuration
+CODE_SERVER_ENABLED = os.getenv("CODE_SERVER_ENABLED", "true").lower() == "true"
 CODE_SERVER_DOMAIN = os.getenv("CODE_SERVER_DOMAIN", "code.example.com")
 CODE_SERVER_PORT_BASE = int(os.getenv("CODE_SERVER_PORT_BASE", "9000"))
 

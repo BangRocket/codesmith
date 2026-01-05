@@ -9,12 +9,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import CODE_SERVER_DOMAIN, CODE_SERVER_PORT_BASE
+from .config import CODE_SERVER_DOMAIN, CODE_SERVER_ENABLED, CODE_SERVER_PORT_BASE
 
 logger = logging.getLogger("codesmith.code_server")
+
+
+def is_code_server_available() -> bool:
+    """Check if code-server is installed and enabled."""
+    if not CODE_SERVER_ENABLED:
+        return False
+    return shutil.which("code-server") is not None
 
 
 @dataclass
@@ -59,7 +67,7 @@ class CodeServerManager:
         """Free a port for reuse."""
         self._used_ports.discard(port)
 
-    async def start(self, user_id: str, workspace: Path) -> CodeServerInfo:
+    async def start(self, user_id: str, workspace: Path) -> CodeServerInfo | None:
         """Start a code-server instance for a user.
 
         Args:
@@ -67,8 +75,13 @@ class CodeServerManager:
             workspace: Path to user's workspace directory
 
         Returns:
-            CodeServerInfo with connection details
+            CodeServerInfo with connection details, or None if not available
         """
+        # Check if code-server is available
+        if not is_code_server_available():
+            logger.info("code-server not available, skipping")
+            return None
+
         # Check if already running
         if user_id in self._instances:
             return self._instances[user_id]

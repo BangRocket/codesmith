@@ -309,7 +309,7 @@ class StreamCodesmithBot(commands.Bot):
             # Start session
             session = await self.session_manager.start_session(user_id, auth_method)
 
-            # Start code-server
+            # Start code-server (optional - may return None if not available)
             cs_info = await self.code_server_manager.start(user_id, session.workspace)
             session.code_server = cs_info
 
@@ -320,13 +320,14 @@ class StreamCodesmithBot(commands.Bot):
             embed = self.embed_manager.get_or_create(user_id, ctx.author.display_name)
             await embed.create_message(ctx.channel)
 
-            await ctx.followup.send(
-                f"Session started! Messages in this channel go to Claude Code.\n"
-                f"**Code Editor:** {cs_info.url}\n"
-                f"**Password:** ||{cs_info.password}||\n"
-                "Use `/cc stop` to end the session.",
-                ephemeral=True,
-            )
+            # Build response message
+            msg_lines = ["Session started! Messages in this channel go to Claude Code."]
+            if cs_info:
+                msg_lines.append(f"**Code Editor:** {cs_info.url}")
+                msg_lines.append(f"**Password:** ||{cs_info.password}||")
+            msg_lines.append("Use `/cc stop` to end the session.")
+
+            await ctx.followup.send("\n".join(msg_lines), ephemeral=True)
 
         except Exception as e:
             logger.exception(f"Failed to start session for {user_id}")
