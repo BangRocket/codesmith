@@ -93,6 +93,7 @@ class StreamSession:
             prompt,
             "--output-format",
             "stream-json",
+            "--verbose",
             "--dangerously-skip-permissions",
         ]
 
