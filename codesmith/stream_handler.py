@@ -109,8 +109,8 @@ class StreamSession:
 
         env = os.environ.copy()
 
-        # Set working directory context
-        env["HOME"] = str(self.workspace / ".home")
+        # Set HOME to workspace so Claude Code finds .claude credentials there
+        env["HOME"] = str(self.workspace)
 
         # Set API key if using API key auth
         if self.auth_method == AuthMethod.API_KEY and ANTHROPIC_API_KEY:
@@ -138,15 +138,9 @@ class StreamSession:
         cmd = self._build_command(message)
         env = self._build_env()
 
-        # Ensure home directory exists
-        home_dir = self.workspace / ".home"
-        home_dir.mkdir(exist_ok=True)
-
-        # Link .claude directory if it exists
+        # Ensure .claude directory exists for credentials
         claude_dir = self.workspace / ".claude"
-        home_claude_dir = home_dir / ".claude"
-        if claude_dir.exists() and not home_claude_dir.exists():
-            home_claude_dir.symlink_to(claude_dir)
+        claude_dir.mkdir(exist_ok=True)
 
         self.process = await asyncio.create_subprocess_exec(
             *cmd,
