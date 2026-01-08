@@ -4,51 +4,39 @@ Claude Code to Discord bridge - run Claude Code sessions through Discord.
 
 ## Features
 
-- **Per-user sessions**: Each Discord user gets their own isolated Claude Code session
+- **Per-user sessions**: Each Discord user gets their own Claude Code session
 - **Real-time output**: Claude Code output streams directly to Discord channels
 - **Status embed**: Auto-updating pinned embed showing model, tokens, cost, and context usage
 - **Slash commands**: Pass Claude Code commands through Discord (`/cc clear`, `/cc compact`, etc.)
-- **Sandboxed execution**: Sessions run in bubblewrap namespace isolation
+- **SDK-based**: Uses official `@anthropic-ai/claude-code` npm package for reliable output
 
 ## Requirements
 
-### VPS Requirements
-- Linux with kernel 3.8+ (user namespaces support)
-- `bubblewrap` package installed
-- Node.js 20+
-- Claude Code CLI (`@anthropic-ai/claude-code`)
-- Python 3.11+
-
-### Environment Variables
-```bash
-DISCORD_BOT_TOKEN=your_discord_bot_token
-ANTHROPIC_API_KEY=your_anthropic_api_key  # Optional if users authenticate via /cc login
-CODESMITH_CHANNEL_ID=optional_channel_restriction
-```
+- Node.js 18+
+- Discord bot token and application ID
+- Anthropic API key OR users with Claude Max/Pro subscriptions
 
 ## Installation
 
-### 1. Setup VPS
+### 1. Install dependencies
 ```bash
-# Run the setup script as root
-sudo ./scripts/setup_vps.sh
+npm install
 ```
 
-### 2. Install Python dependencies
-```bash
-cd codesmith
-poetry install
-```
-
-### 3. Configure environment
+### 2. Configure environment
 ```bash
 cp .env.example .env
-# Edit .env with your tokens
+# Edit .env with your Discord bot token and app ID
 ```
 
-### 4. Run the bot
+### 3. Run the bot
 ```bash
-poetry run python -m codesmith.bot
+# Development (with hot reload)
+npm run dev
+
+# Production
+npm run build
+npm start
 ```
 
 ## Usage
@@ -65,7 +53,6 @@ poetry run python -m codesmith.bot
 | `/cc compact` | Compact conversation to save context |
 | `/cc model <name>` | Change the model |
 | `/cc status` | Show session status |
-| `/cc requirements` | Check sandbox requirements |
 
 ### Authentication
 
@@ -88,24 +75,26 @@ Once you start a session with `/cc start`:
 ## Architecture
 
 ```
-Discord Bot (bot.py)
+Discord Bot (bot.ts)
     ↓
-Session Manager (session_manager.py)
+Session Manager (session.ts)
     ↓
-PTY Handler (pty_handler.py) ←→ Output Parser (output_parser.py)
+Claude SDK Wrapper (claude.ts) ←→ Status Embed (embed.ts)
     ↓
-Sandbox Runner (sandbox_runner.py)
-    ↓
-bubblewrap (bwrap) → Claude Code CLI
+@anthropic-ai/claude-code query()
 ```
 
-## Security
+## Environment Variables
 
-Sessions run inside bubblewrap namespace isolation:
-- Isolated filesystem (only workspace is writable)
-- Isolated process namespace
-- Network access allowed (for Anthropic API)
-- `--dangerously-skip-permissions` only applies inside sandbox
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DISCORD_BOT_TOKEN` | Yes | Discord bot token |
+| `DISCORD_APP_ID` | Yes | Discord application ID |
+| `ANTHROPIC_API_KEY` | No | Global API key (fallback) |
+| `CODESMITH_CHANNEL_ID` | No | Restrict to specific channel |
+| `CODESMITH_WORKSPACE_BASE` | No | Custom workspace directory |
+| `CODESMITH_SESSION_TIMEOUT` | No | Session timeout in ms |
+| `CODESMITH_DEFAULT_MODEL` | No | Default model name |
 
 ## License
 
