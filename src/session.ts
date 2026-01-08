@@ -6,6 +6,7 @@ import type { TextChannel } from "discord.js";
 import { SESSION_TIMEOUT_MS } from "./config.js";
 import { defaultStatus, runClaudeQuery, sendSlashCommand } from "./claude.js";
 import type { StatusData, UserSession } from "./types.js";
+import { sessionLogger as log } from "./logger.js";
 
 /**
  * Manages all user Claude Code sessions.
@@ -19,6 +20,7 @@ export class SessionManager {
    * Start the session manager background tasks.
    */
   start(): void {
+    log.info("Session manager started");
     // Cleanup expired sessions every minute
     this.cleanupInterval = setInterval(() => {
       this.cleanupExpiredSessions();
@@ -29,6 +31,7 @@ export class SessionManager {
    * Stop the session manager and clean up all sessions.
    */
   async stop(): Promise<void> {
+    log.info("Session manager stopping");
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
@@ -39,6 +42,7 @@ export class SessionManager {
     for (const userId of userIds) {
       await this.stopSession(userId);
     }
+    log.info("Session manager stopped");
   }
 
   /**
@@ -46,12 +50,20 @@ export class SessionManager {
    */
   private cleanupExpiredSessions(): void {
     const now = Date.now();
+    log.debug(`Running cleanup check, ${this.sessions.size} sessions active`);
 
     for (const [userId, session] of this.sessions) {
       const idleMs = now - session.lastActivity.getTime();
+      const idleSec = Math.floor(idleMs / 1000);
+      const timeoutSec = Math.floor(SESSION_TIMEOUT_MS / 1000);
 
-      if (idleMs > SESSION_TIMEOUT_MS || !session.isActive) {
-        console.log(`Cleaning up expired session for user ${userId}`);
+      log.debug(`Session ${userId}: idle=${idleSec}s, timeout=${timeoutSec}s, isActive=${session.isActive}`);
+
+      if (idleMs > SESSION_TIMEOUT_MS) {
+        log.info(`Session ${userId} expired (idle ${idleSec}s > timeout ${timeoutSec}s)`);
+        this.stopSession(userId);
+      } else if (!session.isActive) {
+        log.info(`Session ${userId} marked inactive, cleaning up`);
         this.stopSession(userId);
       }
     }
@@ -91,8 +103,11 @@ export class SessionManager {
     username: string,
     channel: TextChannel
   ): Promise<UserSession> {
+    log.info(`Starting session for user ${userId} (${username})`);
+
     // Stop existing session if any
     if (this.sessions.has(userId)) {
+      log.info(`User ${userId} has existing session, stopping it first`);
       await this.stopSession(userId);
     }
 
@@ -108,7 +123,10 @@ export class SessionManager {
     };
 
     this.sessions.set(userId, session);
-    console.log(`Started session for user ${userId}`);
+    log.info(`Session started for user ${userId}`, {
+      channelId: channel.id,
+      createdAt: session.createdAt.toISOString(),
+    });
 
     return session;
   }
@@ -120,6 +138,11 @@ export class SessionManager {
     const session = this.sessions.get(userId);
 
     if (session) {
+      log.info(`Stopping session for user ${userId}`, {
+        wasActive: session.isActive,
+        uptime: Math.floor((Date.now() - session.createdAt.getTime()) / 1000),
+      });
+
       // Abort any running query
       session.abortController.abort();
       session.isActive = false;
@@ -127,7 +150,9 @@ export class SessionManager {
       this.sessions.delete(userId);
       this.statusUpdateCallbacks.delete(userId);
 
-      console.log(`Stopped session for user ${userId}`);
+      log.info(`Session stopped for user ${userId}`);
+    } else {
+      log.warn(`Attempted to stop non-existent session for user ${userId}`);
     }
   }
 
@@ -137,13 +162,28 @@ export class SessionManager {
   async sendInput(userId: string, text: string): Promise<boolean> {
     const session = this.getSession(userId);
     if (!session) {
+      log.warn(`sendInput called for user ${userId} but no active session`);
       return false;
     }
 
+    log.info(`Sending input to session ${userId}`, {
+      textLength: text.length,
+      textPreview: text.substring(0, 100),
+    });
+
     const callback = this.statusUpdateCallbacks.get(userId) || (() => {});
 
-    // Run the query
-    await runClaudeQuery(session, text, callback);
+    try {
+      // Run the query
+      await runClaudeQuery(session, text, callback);
+      log.info(`Query completed for user ${userId}`);
+    } catch (error) {
+      log.error(`Query failed for user ${userId}`, {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    }
+
     return true;
   }
 
@@ -153,12 +193,23 @@ export class SessionManager {
   async sendSlashCommand(userId: string, command: string): Promise<boolean> {
     const session = this.getSession(userId);
     if (!session) {
+      log.warn(`sendSlashCommand called for user ${userId} but no active session`);
       return false;
     }
 
+    log.info(`Sending slash command to session ${userId}`, { command });
+
     const callback = this.statusUpdateCallbacks.get(userId) || (() => {});
 
-    await sendSlashCommand(session, command, callback);
+    try {
+      await sendSlashCommand(session, command, callback);
+      log.info(`Slash command completed for user ${userId}`);
+    } catch (error) {
+      log.error(`Slash command failed for user ${userId}`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     return true;
   }
 
