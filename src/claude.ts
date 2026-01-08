@@ -1,26 +1,11 @@
 /**
- * Claude Code SDK wrapper.
+ * Claude Agent SDK wrapper.
  */
 
-// @ts-expect-error - @anthropic-ai/claude-code doesn't have type declarations
-import { query } from "@anthropic-ai/claude-code";
-
-interface ClaudeSDKMessage {
-  type: string;
-  content?: string;
-  message?: {
-    content: Array<{ type: string; text?: string }>;
-  };
-  result?: string;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-  };
-  cost_usd?: number;
-}
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { TextChannel } from "discord.js";
 import { DISCORD_MSG_LIMIT, ensureWorkspace, DEFAULT_MODEL } from "./config.js";
-import { getAuthEnv, getAuthMethod } from "./auth.js";
+import { getAuthMethod } from "./auth.js";
 import { AuthMethod, type StatusData, type UserSession } from "./types.js";
 
 /**
@@ -34,30 +19,6 @@ export function defaultStatus(): StatusData {
     cost: 0,
     contextPercent: 0,
   };
-}
-
-/**
- * Parse status from Claude Code SDK messages.
- */
-function parseStatusFromMessage(message: ClaudeSDKMessage, current: StatusData): StatusData {
-  const status = { ...current };
-
-  // The SDK provides usage info in result messages
-  if (message.usage) {
-    if (message.usage.input_tokens) {
-      status.inputTokens = message.usage.input_tokens;
-    }
-    if (message.usage.output_tokens) {
-      status.outputTokens = message.usage.output_tokens;
-    }
-  }
-
-  // Cost info might be in metadata
-  if (message.cost_usd !== undefined) {
-    status.cost = message.cost_usd;
-  }
-
-  return status;
 }
 
 /**
@@ -77,7 +38,7 @@ export function chunkForDiscord(text: string, limit = DISCORD_MSG_LIMIT): string
       break;
     }
 
-    let chunk = remaining.slice(0, limit);
+    const chunk = remaining.slice(0, limit);
     let splitPoint = limit;
 
     // Try to split at code block boundary
@@ -164,21 +125,6 @@ export async function runClaudeQuery(
   // Ensure workspace exists
   const workspace = ensureWorkspace(session.userId);
 
-  // Get auth environment
-  const authEnv = getAuthEnv(session.userId);
-
-  // Build query options
-  const options = {
-    prompt,
-    abortController: session.abortController,
-    options: {
-      cwd: workspace,
-      dangerouslySkipPermissions: true,
-      model: session.status.model,
-      ...authEnv,
-    },
-  };
-
   let buffer = "";
   let lastSend = Date.now();
   const BUFFER_DELAY_MS = 500;
@@ -196,39 +142,54 @@ export async function runClaudeQuery(
     // Send initial indicator
     await session.channel.sendTyping();
 
-    const result = query(options);
+    // Use the Agent SDK query function
+    const result = query({
+      prompt,
+      options: {
+        cwd: workspace,
+        permissionMode: "bypassPermissions",
+        model: session.status.model,
+        allowedTools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+        abortController: session.abortController,
+      },
+    });
 
     for await (const message of result) {
       session.lastActivity = new Date();
 
-      // Update status from message
-      const newStatus = parseStatusFromMessage(message, session.status);
-      if (
-        newStatus.inputTokens !== session.status.inputTokens ||
-        newStatus.cost !== session.status.cost
-      ) {
+      // Handle different message types based on SDK structure
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const msg = message as any;
+
+      // Update status from usage info if present
+      if (msg.usage) {
+        const newStatus = { ...session.status };
+        if (msg.usage.input_tokens) {
+          newStatus.inputTokens = msg.usage.input_tokens;
+        }
+        if (msg.usage.output_tokens) {
+          newStatus.outputTokens = msg.usage.output_tokens;
+        }
+        if (msg.cost_usd !== undefined) {
+          newStatus.cost = msg.cost_usd;
+        }
         session.status = newStatus;
         onStatusUpdate(newStatus);
       }
 
-      // Handle different message types
-      if (message.type === "text" && message.content) {
-        buffer += message.content;
-      } else if (message.type === "assistant" && message.message) {
+      // Handle text content
+      if (msg.type === "text" && msg.content) {
+        buffer += msg.content;
+      } else if (msg.type === "assistant" && msg.message?.content) {
         // Assistant response with content blocks
-        const content = message.message.content;
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block.type === "text" && block.text) {
-              buffer += block.text;
-            }
+        for (const block of msg.message.content) {
+          if (block.type === "text" && block.text) {
+            buffer += block.text;
           }
         }
-      } else if (message.type === "result") {
+      } else if ("result" in msg && msg.result) {
         // Final result
-        if (message.result) {
-          buffer += "\n" + message.result;
-        }
+        buffer += "\n" + msg.result;
       }
 
       // Flush buffer if needed
