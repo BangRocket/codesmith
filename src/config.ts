@@ -36,6 +36,10 @@ export const EMBED_UPDATE_INTERVAL_MS = 3000;
 // Claude Code Configuration
 export const DEFAULT_MODEL = process.env.CODESMITH_DEFAULT_MODEL ?? "sonnet";
 
+// GitHub Configuration (for repo creation)
+export const GITHUB_TOKEN = process.env.GITHUB_TOKEN ?? "";
+export const GITHUB_OWNER = process.env.GITHUB_OWNER ?? "";
+
 /**
  * Check if required configuration is present.
  */

@@ -33,6 +33,15 @@ import {
 import { AuthMethod } from "./types.js";
 import { getSessionManager } from "./session.js";
 import { EmbedManager } from "./embed.js";
+import {
+  gitInit,
+  gitSetRemote,
+  gitPush,
+  gitCreate,
+  getGitHubFileUrl,
+  isGitRepo,
+  getRemoteUrl,
+} from "./git.js";
 
 /**
  * Codesmith Discord bot.
@@ -116,6 +125,9 @@ export class CodesmithBot {
           break;
         case "download":
           await this.handleDownload(interaction);
+          break;
+        case "git":
+          await this.handleGit(interaction);
           break;
         default:
           await interaction.reply({ content: "Unknown command", ephemeral: true });
@@ -323,7 +335,7 @@ export class CodesmithBot {
   }
 
   /**
-   * Handle /cc download command.
+   * Handle /cc download command - returns GitHub URL to file.
    */
   private async handleDownload(interaction: ChatInputCommandInteraction): Promise<void> {
     const userId = interaction.user.id;
@@ -331,6 +343,24 @@ export class CodesmithBot {
 
     // Get user's workspace
     const workspace = getUserWorkspace(userId);
+
+    // Check if workspace is a git repo with remote
+    if (!isGitRepo(workspace)) {
+      await interaction.reply({
+        content: "No git repository. Run `/cc git init` and `/cc git remote <url>` first.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const remoteUrl = await getRemoteUrl(workspace);
+    if (!remoteUrl) {
+      await interaction.reply({
+        content: "No git remote configured. Run `/cc git remote <url>` or `/cc git create <name>` first.",
+        ephemeral: true,
+      });
+      return;
+    }
 
     // Resolve the path relative to workspace, preventing path traversal
     const resolvedPath = resolve(workspace, filePath);
@@ -351,50 +381,91 @@ export class CodesmithBot {
       return;
     }
 
-    // Check if it's a file (not directory)
-    const stats = statSync(resolvedPath);
-    if (stats.isDirectory()) {
+    // Get GitHub URL
+    const githubUrl = await getGitHubFileUrl(workspace, filePath);
+
+    if (!githubUrl) {
       await interaction.reply({
-        content: "Cannot download a directory. Please specify a file path.",
+        content: "Could not generate GitHub URL. Make sure the remote is a GitHub repository.",
         ephemeral: true,
       });
       return;
     }
 
-    // Check file size (Discord limit is 8MB for non-boosted, 25MB for level 2, 50MB for level 3)
-    const MAX_SIZE = 8 * 1024 * 1024; // 8MB
-    if (stats.size > MAX_SIZE) {
-      await interaction.reply({
-        content: `File too large (${(stats.size / 1024 / 1024).toFixed(2)}MB). Discord limit is 8MB.`,
-        ephemeral: true,
-      });
-      return;
-    }
+    // Remind user to push first
+    await interaction.reply({
+      content: `**File:** \`${filePath}\`\n**GitHub:** ${githubUrl}\n\n*Note: Make sure you've pushed recent changes with \`/cc git push\`*`,
+    });
+  }
 
-    try {
-      await interaction.deferReply();
+  /**
+   * Handle /cc git commands.
+   */
+  private async handleGit(interaction: ChatInputCommandInteraction): Promise<void> {
+    const userId = interaction.user.id;
+    const action = interaction.options.getString("action", true);
 
-      const fileBuffer = readFileSync(resolvedPath);
-      const fileName = basename(resolvedPath);
+    switch (action) {
+      case "init": {
+        const result = await gitInit(userId);
+        await interaction.reply({ content: result.message, ephemeral: !result.success });
+        break;
+      }
 
-      const attachment = new AttachmentBuilder(fileBuffer, { name: fileName });
+      case "remote": {
+        const url = interaction.options.getString("url");
+        if (!url) {
+          // Show current remote
+          const workspace = getUserWorkspace(userId);
+          const currentRemote = await getRemoteUrl(workspace);
+          await interaction.reply({
+            content: currentRemote ? `Current remote: ${currentRemote}` : "No remote configured.",
+            ephemeral: true,
+          });
+        } else {
+          const result = await gitSetRemote(userId, url);
+          await interaction.reply({ content: result.message, ephemeral: !result.success });
+        }
+        break;
+      }
 
-      await interaction.editReply({
-        content: `Here's your file: \`${filePath}\``,
-        files: [attachment],
-      });
-    } catch (error) {
-      console.error("Failed to send file:", error);
-      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      case "push": {
+        await interaction.deferReply();
+        const message = interaction.options.getString("message") ?? undefined;
+        const result = await gitPush(userId, message);
+        await interaction.editReply({
+          content: result.success && result.url
+            ? `${result.message}\n${result.url}`
+            : result.message,
+        });
+        break;
+      }
 
-      if (interaction.deferred) {
-        await interaction.editReply({ content: `Failed to download file: ${errorMessage}` });
-      } else {
+      case "create": {
+        const name = interaction.options.getString("name");
+        if (!name) {
+          await interaction.reply({
+            content: "Please provide a repository name.",
+            ephemeral: true,
+          });
+          return;
+        }
+
+        await interaction.deferReply();
+        const result = await gitCreate(userId, name);
+        await interaction.editReply({
+          content: result.success && result.url
+            ? `${result.message}\n${result.url}`
+            : result.message,
+        });
+        break;
+      }
+
+      default:
         await interaction.reply({
-          content: `Failed to download file: ${errorMessage}`,
+          content: "Unknown git action. Use: init, remote, push, or create.",
           ephemeral: true,
         });
-      }
     }
   }
 
@@ -523,12 +594,47 @@ export class CodesmithBot {
         .addSubcommand((sub) =>
           sub
             .setName("download")
-            .setDescription("Download a file from your workspace")
+            .setDescription("Get GitHub link to a file in your workspace")
             .addStringOption((opt) =>
               opt
                 .setName("path")
                 .setDescription("Path to file (relative to your workspace)")
                 .setRequired(true)
+            )
+        )
+        .addSubcommand((sub) =>
+          sub
+            .setName("git")
+            .setDescription("Git operations for your workspace")
+            .addStringOption((opt) =>
+              opt
+                .setName("action")
+                .setDescription("Git action to perform")
+                .setRequired(true)
+                .addChoices(
+                  { name: "init", value: "init" },
+                  { name: "remote", value: "remote" },
+                  { name: "push", value: "push" },
+                  { name: "create", value: "create" }
+                )
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("url")
+                .setDescription("Remote URL (for 'remote' action)")
+                .setRequired(false)
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("name")
+                .setDescription("Repository name (for 'create' action)")
+                .setRequired(false)
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("message")
+                .setDescription("Commit message (for 'push' action)")
+                .setRequired(false)
             )
         ),
     ];
