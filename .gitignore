@@ -13,6 +13,8 @@ dist/
 # Environment
 .env
 .env.local
+.env.*
+!.env.example
 
 # OS
 .DS_Store
@@ -27,3 +29,21 @@ npm-debug.log*
 
 # TypeScript
 *.tsbuildinfo
+
+# Serena
+.serena/
+
+# Python leftovers
+__pycache__/
+*.pyc
+.ruff_cache/
+.venv/
+*.egg-info/
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Misc
+.claude/
+*.bak
