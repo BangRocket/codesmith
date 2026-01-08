@@ -40,7 +40,15 @@ export const DEFAULT_MODEL = process.env.CODESMITH_DEFAULT_MODEL ?? "sonnet";
  * Check if required configuration is present.
  */
 export function isConfigured(): boolean {
-  return Boolean(DISCORD_BOT_TOKEN);
+  if (!DISCORD_BOT_TOKEN) {
+    console.error("Missing DISCORD_BOT_TOKEN environment variable");
+    return false;
+  }
+  if (!DISCORD_APP_ID) {
+    console.error("Missing DISCORD_APP_ID environment variable");
+    return false;
+  }
+  return true;
 }
 
 /**
