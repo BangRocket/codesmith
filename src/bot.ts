@@ -8,16 +8,20 @@ import {
   SlashCommandBuilder,
   REST,
   Routes,
+  AttachmentBuilder,
   type ChatInputCommandInteraction,
   type Message,
   type TextChannel,
   ChannelType,
 } from "discord.js";
+import { existsSync, statSync, readFileSync } from "fs";
+import { join, basename, resolve } from "path";
 import {
   DISCORD_BOT_TOKEN,
   DISCORD_APP_ID,
   CODESMITH_CHANNEL_ID,
   isConfigured,
+  getUserWorkspace,
 } from "./config.js";
 import {
   deleteCredentials,
@@ -109,6 +113,9 @@ export class CodesmithBot {
           break;
         case "logout":
           await this.handleLogout(interaction);
+          break;
+        case "download":
+          await this.handleDownload(interaction);
           break;
         default:
           await interaction.reply({ content: "Unknown command", ephemeral: true });
@@ -316,6 +323,82 @@ export class CodesmithBot {
   }
 
   /**
+   * Handle /cc download command.
+   */
+  private async handleDownload(interaction: ChatInputCommandInteraction): Promise<void> {
+    const userId = interaction.user.id;
+    const filePath = interaction.options.getString("path", true);
+
+    // Get user's workspace
+    const workspace = getUserWorkspace(userId);
+
+    // Resolve the path relative to workspace, preventing path traversal
+    const resolvedPath = resolve(workspace, filePath);
+    if (!resolvedPath.startsWith(workspace)) {
+      await interaction.reply({
+        content: "Invalid path: cannot access files outside your workspace.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    // Check if file exists
+    if (!existsSync(resolvedPath)) {
+      await interaction.reply({
+        content: `File not found: \`${filePath}\``,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    // Check if it's a file (not directory)
+    const stats = statSync(resolvedPath);
+    if (stats.isDirectory()) {
+      await interaction.reply({
+        content: "Cannot download a directory. Please specify a file path.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    // Check file size (Discord limit is 8MB for non-boosted, 25MB for level 2, 50MB for level 3)
+    const MAX_SIZE = 8 * 1024 * 1024; // 8MB
+    if (stats.size > MAX_SIZE) {
+      await interaction.reply({
+        content: `File too large (${(stats.size / 1024 / 1024).toFixed(2)}MB). Discord limit is 8MB.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    try {
+      await interaction.deferReply();
+
+      const fileBuffer = readFileSync(resolvedPath);
+      const fileName = basename(resolvedPath);
+
+      const attachment = new AttachmentBuilder(fileBuffer, { name: fileName });
+
+      await interaction.editReply({
+        content: `Here's your file: \`${filePath}\``,
+        files: [attachment],
+      });
+    } catch (error) {
+      console.error("Failed to send file:", error);
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+
+      if (interaction.deferred) {
+        await interaction.editReply({ content: `Failed to download file: ${errorMessage}` });
+      } else {
+        await interaction.reply({
+          content: `Failed to download file: ${errorMessage}`,
+          ephemeral: true,
+        });
+      }
+    }
+  }
+
+  /**
    * Handle incoming messages.
    */
   private async handleMessage(message: Message): Promise<void> {
@@ -436,6 +519,17 @@ export class CodesmithBot {
         )
         .addSubcommand((sub) =>
           sub.setName("logout").setDescription("Remove your stored Claude credentials")
+        )
+        .addSubcommand((sub) =>
+          sub
+            .setName("download")
+            .setDescription("Download a file from your workspace")
+            .addStringOption((opt) =>
+              opt
+                .setName("path")
+                .setDescription("Path to file (relative to your workspace)")
+                .setRequired(true)
+            )
         ),
     ];
 
